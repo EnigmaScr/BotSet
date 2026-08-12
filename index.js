@@ -19,12 +19,12 @@ client.once('clientReady', () => {
 app.post('/webhook', async (req, res) => {
     try {
         const payload = req.body;
-        console.log('Получен вебхук от Sellix:', JSON.stringify(payload, null, 2));
+        console.log('--- ПОЛНЫЙ ВЕБХУК ОТ SELLIX ---');
+        console.log(JSON.stringify(payload, null, 2));
+        console.log('--------------------------------');
 
         const webhookOrder = payload.data?.order || payload.data || payload;
         const eventType = payload.event || webhookOrder.event;
-
-        console.log('Тип события:', eventType);
 
         if (
             eventType === 'order:paid' || 
@@ -37,17 +37,18 @@ app.post('/webhook', async (req, res) => {
             let discordId = null;
             let licenseKey = 'Ключ успешно создан в системе Sellix';
 
-            // Ищем 17-20 значный Discord ID прямо в тексте почты или во всем JSON вебхука
+            // Ищем любые 17-20 значные цифры (Discord ID) во всем теле запроса
             const rawString = JSON.stringify(payload);
-            const match = rawString.match(/\b\d{17,20}\b/);
+            const matches = rawString.match(/\b\d{17,20}\b/g);
             
-            if (match) {
-                discordId = match[0];
+            if (matches && matches.length > 0) {
+                // Берем первое попавшееся похожее число (или исключаем системные id)
+                discordId = matches.find(id => id !== webhookOrder.uuid && id !== String(webhookOrder.product_id));
             }
 
-            console.log('Извлеченный Discord ID:', discordId);
+            console.log('Найденный Discord ID:', discordId);
 
-            // Извлечение лицензионного ключа из заказа
+            // Извлечение ключа товара
             const productSerials = webhookOrder.serials || webhookOrder.product_sent || webhookOrder.product_downloads || webhookOrder.items || [];
             if (Array.isArray(productSerials) && productSerials.length > 0) {
                 if (typeof productSerials[0] === 'string') {
@@ -59,18 +60,17 @@ app.post('/webhook', async (req, res) => {
                 licenseKey = productSerials;
             }
 
-            // Отправка в ЛС
             if (discordId) {
                 try {
                     const cleanId = String(discordId).trim();
                     const user = await client.users.fetch(cleanId);
                     await user.send(`Спасибо за покупку в магазине!\nВаш лицензионный ключ: \`${licenseKey}\``);
-                    console.log(`Ключ успешно отправлен в ЛС пользователю с Discord ID: ${cleanId}`);
+                    console.log(`Ключ успешно отправлен в ЛС пользователю с ID: ${cleanId}`);
                 } catch (dmError) {
-                    console.error('Не удалось отправить ЛС (закрыты ЛС у юзера или неверный ID):', dmError);
+                    console.error('Ошибка отправки ЛС (закрыты личные сообщения или неверный ID):', dmError.message);
                 }
             } else {
-                console.log('⚠️ В данных заказа не найден Discord ID (убедитесь, что указали его в поле Email при покупке).');
+                console.log('⚠️ Discord ID в теле вебхука не обнаружен.');
             }
         } else {
             console.log('Событие проигнорировано.');
