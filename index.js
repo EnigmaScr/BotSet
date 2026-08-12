@@ -3,7 +3,6 @@ const express = require('express');
 const dns = require('dns');
 require('dotenv').config();
 
-// Принудительно устанавливаем порядок резолва DNS IPv4 First, чтобы убрать ошибку EAI_AGAIN в Railway
 if (dns.setDefaultResultOrder) {
     dns.setDefaultResultOrder('ipv4first');
 }
@@ -44,24 +43,33 @@ app.post('/webhook', async (req, res) => {
             let discordId = null;
             let licenseKey = 'Ключ успешно создан в системе Sellix';
 
-            // 1. Пытаемся взять custom_fields прямо из вебхука
             let customFields = webhookOrder.custom_fields || webhookOrder.properties || payload.custom_fields || null;
 
-            // 2. Если полей в вебхуке нет, запрашиваем API с обработкой IP Fallback
+            // Запрос к API Sellix с добавлением обязательного заголовка магазина
             if ((!customFields || Object.keys(customFields).length === 0) && orderUuid && process.env.SELLIX_API_KEY) {
                 try {
                     console.log('Делаем запрос к API Sellix для получения полей заказа...');
+                    
+                    const headers = {
+                        'Authorization': `Bearer ${process.env.SELLIX_API_KEY.trim()}`,
+                        'User-Agent': 'SellBot-Discord/1.0',
+                        'Accept': 'application/json'
+                    };
+
+                    // Если указано имя мерчанта, добавляем его в заголовок
+                    if (process.env.SELLIX_MERCHANT_NAME) {
+                        headers['X-Sellix-Merchant'] = process.env.SELLIX_MERCHANT_NAME.trim();
+                    }
+
                     const apiResponse = await fetch(`https://api.sellix.io/v1/orders/${orderUuid}`, {
                         method: 'GET',
-                        headers: {
-                            'Authorization': `Bearer ${process.env.SELLIX_API_KEY.trim()}`,
-                            'User-Agent': 'SellBot-Discord/1.0',
-                            'Accept': 'application/json'
-                        }
+                        headers: headers
                     });
 
+                    const responseText = await apiResponse.text();
+                    
                     if (apiResponse.ok) {
-                        const apiData = await apiResponse.json();
+                        const apiData = JSON.parse(responseText);
                         if (apiData?.data?.order) {
                             const order = apiData.data.order;
                             customFields = order.custom_fields || order.properties || customFields;
@@ -73,14 +81,14 @@ app.post('/webhook', async (req, res) => {
                             }
                         }
                     } else {
-                        console.error(`Ошибка ответа API Sellix: Статус ${apiResponse.status}`);
+                        console.error(`Ошибка ответа API Sellix [${apiResponse.status}]:`, responseText);
                     }
                 } catch (apiErr) {
-                    console.error('Ошибка DNS/сети при запросе к API Sellix (пропускаем и ищем в теле):', apiErr.message);
+                    console.error('Ошибка сети при запросе к API Sellix:', apiErr.message);
                 }
             }
 
-            // 3. Сканируем все возможные структуры на наличие Discord ID
+            // Поиск Discord ID в кастомных полях
             if (customFields) {
                 if (Array.isArray(customFields)) {
                     const foundField = customFields.find(f => {
@@ -98,14 +106,13 @@ app.post('/webhook', async (req, res) => {
                 }
             }
 
-            // Резервная проверка прямых ключей
             if (!discordId) {
                 discordId = webhookOrder.discord_id || webhookOrder.discordId || webhookOrder.custom_field_discord_id || webhookOrder.customer_discord_id;
             }
 
             console.log('Извлеченный Discord ID:', discordId);
 
-            // 4. Серийный ключ
+            // Серийный ключ
             const productSerials = webhookOrder.serials || webhookOrder.product_sent || webhookOrder.product_downloads || webhookOrder.items || [];
             if (Array.isArray(productSerials) && productSerials.length > 0) {
                 if (typeof productSerials[0] === 'string') {
@@ -117,7 +124,7 @@ app.post('/webhook', async (req, res) => {
                 licenseKey = productSerials;
             }
 
-            // 5. Отправка
+            // Отправка сообщения в ЛС
             if (discordId) {
                 try {
                     const cleanId = String(discordId).trim().replace(/[<@!>]/g, '');
