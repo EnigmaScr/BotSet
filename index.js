@@ -12,7 +12,8 @@ const client = new Client({
     ]
 });
 
-client.once('ready', () => {
+// Обновлено событие ready -> clientReady в соответствии со стандартами discord.js
+client.once('clientReady', () => {
     console.log(`Бот успешно запущен и вошел в систему как ${client.user.tag}`);
 });
 
@@ -38,48 +39,72 @@ app.post('/webhook', async (req, res) => {
             let discordId = null;
             let licenseKey = 'Ключ успешно создан в системе Sellix';
 
-            // Пробуем найти кастомные поля прямо в вебхуке (если они там появятся)
-            let customFields = webhookOrder.custom_fields || webhookOrder.properties || [];
-            
-            // Если в вебхуке полей нет, но есть API-ключ и UUID, запрашиваем полные данные через API Sellix
-            if ((!customFields || customFields.length === 0) && orderUuid && process.env.SELLIX_API_KEY) {
+            // 1. Извлекаем кастомные поля из тела вебхука
+            let customFields = webhookOrder.custom_fields || webhookOrder.properties || payload.custom_fields || null;
+
+            // 2. Если полей нет в вебхуке, делаем запрос к рабочему API Sellix (api.sellix.io)
+            if ((!customFields || Object.keys(customFields).length === 0) && orderUuid && process.env.SELLIX_API_KEY) {
                 try {
                     console.log('Делаем запрос к API Sellix для получения полей заказа...');
-                    const apiResponse = await fetch(`https://dev.sellix.io/v1/orders/${orderUuid}`, {
+                    
+                    // Исправлен хост с dev.sellix.io на api.sellix.io
+                    const apiResponse = await fetch(`https://api.sellix.io/v1/orders/${orderUuid}`, {
+                        method: 'GET',
                         headers: {
-                            'Authorization': `Bearer ${process.env.SELLIX_API_KEY}`
+                            'Authorization': `Bearer ${process.env.SELLIX_API_KEY.trim()}`,
+                            'User-Agent': 'SellBot-Discord/1.0',
+                            'Accept': 'application/json'
                         }
                     });
-                    const apiData = await apiResponse.json();
-                    if (apiData && apiData.data && apiData.data.order) {
-                        customFields = apiData.data.order.custom_fields || apiData.data.order.properties || [];
-                        if (apiData.data.order.product_sent) {
-                            licenseKey = apiData.data.order.product_sent;
+
+                    if (apiResponse.ok) {
+                        const apiData = await apiResponse.json();
+                        if (apiData && apiData.data && apiData.data.order) {
+                            const order = apiData.data.order;
+                            customFields = order.custom_fields || order.properties || customFields;
+                            
+                            if (order.serials && order.serials.length > 0) {
+                                licenseKey = order.serials[0];
+                            } else if (order.product_sent) {
+                                licenseKey = order.product_sent;
+                            }
                         }
+                    } else {
+                        console.error(`Ошибка ответа API Sellix: Статус ${apiResponse.status}`);
                     }
                 } catch (apiErr) {
                     console.error('Ошибка при запросе к API Sellix:', apiErr);
                 }
             }
 
-            // Извлекаем Discord ID из массива полей
-            if (Array.isArray(customFields)) {
-                const foundField = customFields.find(f => {
-                    const name = (f.name || f.key || f.id || '').toLowerCase();
-                    return name.includes('discord');
-                });
-                discordId = foundField ? (foundField.value || foundField.val) : null;
+            // 3. Универсальный парсинг Discord ID (поддерживает и Массивы, и Объекты)
+            if (customFields) {
+                if (Array.isArray(customFields)) {
+                    const foundField = customFields.find(f => {
+                        const name = String(f.name || f.key || f.id || '').toLowerCase();
+                        return name.includes('discord');
+                    });
+                    if (foundField) discordId = foundField.value || foundField.val;
+                } else if (typeof customFields === 'object') {
+                    // Если custom_fields пришел в виде объекта { "discord_id": "12345" }
+                    for (const [key, val] of Object.entries(customFields)) {
+                        if (String(key).toLowerCase().includes('discord')) {
+                            discordId = typeof val === 'object' ? (val.value || val.val) : val;
+                            break;
+                        }
+                    }
+                }
             }
 
-            // Если не нашли через массив, проверяем ключи вебхука напрямую
+            // Резервная проверка прямых ключей
             if (!discordId) {
                 discordId = webhookOrder.discord_id || webhookOrder.discordId || webhookOrder.custom_field_discord_id;
             }
 
             console.log('Извлеченный Discord ID:', discordId);
 
-            // Извлекаем ключи товара, если они переданы в вебхуке
-            const productSerials = webhookOrder.product_sent || webhookOrder.serials || webhookOrder.product_downloads || webhookOrder.items || [];
+            // 4. Извлечение серийного ключа/товара из вебхука
+            const productSerials = webhookOrder.serials || webhookOrder.product_sent || webhookOrder.product_downloads || webhookOrder.items || [];
             if (Array.isArray(productSerials) && productSerials.length > 0) {
                 if (typeof productSerials[0] === 'string') {
                     licenseKey = productSerials[0];
@@ -90,14 +115,15 @@ app.post('/webhook', async (req, res) => {
                 licenseKey = productSerials;
             }
 
+            // 5. Отправка в Discord
             if (discordId) {
                 try {
-                    const cleanId = String(discordId).trim();
+                    const cleanId = String(discordId).trim().replace(/[<@!>]/g, ''); // очищаем от лишних символов <@...>
                     const user = await client.users.fetch(cleanId);
                     await user.send(`Спасибо за покупку в магазине!\nВаш лицензионный ключ: \`${licenseKey}\``);
                     console.log(`Ключ успешно отправлен в ЛС пользователю с Discord ID: ${cleanId}`);
                 } catch (dmError) {
-                    console.error('Не удалось отправить личное сообщение (возможно, закрыты ЛС или неверный ID):', dmError);
+                    console.error('Не удалось отправить ЛС (закрыты ЛС у юзера или неверный ID):', dmError);
                 }
             } else {
                 console.log('В заказе не найден Discord ID покупателя.');
