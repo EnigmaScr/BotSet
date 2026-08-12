@@ -51,7 +51,7 @@ app.post('/webhook', async (req, res) => {
 
             console.log('Извлеченный Discord ID:', discordId);
 
-            // Извлекаем ключ товара или информацию о доставке
+      
             const productSerials = order.product_sent || order.serials || order.product_downloads || order.items || [];
             let licenseKey = 'Ключ успешно создан в системе Sellix';
             
