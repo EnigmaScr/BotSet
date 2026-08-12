@@ -19,9 +19,7 @@ client.once('clientReady', () => {
 app.post('/webhook', async (req, res) => {
     try {
         const payload = req.body;
-        console.log('--- ПОЛНЫЙ ВЕБХУК ОТ SELLIX ---');
-        console.log(JSON.stringify(payload, null, 2));
-        console.log('--------------------------------');
+        console.log('Получен вебхук от Sellix:', JSON.stringify(payload, null, 2));
 
         const webhookOrder = payload.data?.order || payload.data || payload;
         const eventType = payload.event || webhookOrder.event;
@@ -37,16 +35,15 @@ app.post('/webhook', async (req, res) => {
             let discordId = null;
             let licenseKey = 'Ключ успешно создан в системе Sellix';
 
-            // Ищем любые 17-20 значные цифры (Discord ID) во всем теле запроса
-            const rawString = JSON.stringify(payload);
-            const matches = rawString.match(/\b\d{17,20}\b/g);
+            // Достаем цифры из поля customer_email, куда мы записали Discord ID
+            const emailField = String(webhookOrder.customer_email || '');
+            const match = emailField.match(/\b\d{17,20}\b/);
             
-            if (matches && matches.length > 0) {
-                // Берем первое попавшееся похожее число (или исключаем системные id)
-                discordId = matches.find(id => id !== webhookOrder.uuid && id !== String(webhookOrder.product_id));
+            if (match) {
+                discordId = match[0];
             }
 
-            console.log('Найденный Discord ID:', discordId);
+            console.log('Извлеченный Discord ID из email:', discordId);
 
             // Извлечение ключа товара
             const productSerials = webhookOrder.serials || webhookOrder.product_sent || webhookOrder.product_downloads || webhookOrder.items || [];
@@ -60,6 +57,7 @@ app.post('/webhook', async (req, res) => {
                 licenseKey = productSerials;
             }
 
+            // Отправка в ЛС
             if (discordId) {
                 try {
                     const cleanId = String(discordId).trim();
@@ -70,7 +68,7 @@ app.post('/webhook', async (req, res) => {
                     console.error('Ошибка отправки ЛС (закрыты личные сообщения или неверный ID):', dmError.message);
                 }
             } else {
-                console.log('⚠️ Discord ID в теле вебхука не обнаружен.');
+                console.log('⚠️ В поле customer_email не найден Discord ID. Убедитесь, что указали его при покупке.');
             }
         } else {
             console.log('Событие проигнорировано.');
