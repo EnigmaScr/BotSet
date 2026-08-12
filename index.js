@@ -16,6 +16,12 @@ client.once('clientReady', () => {
     console.log(`Бот успешно запущен и вошел в систему как ${client.user.tag}`);
 });
 
+// Функция для генерации красивого ключа, если в Sellix не настроен склад
+function generateLicenseKey(orderUuid) {
+    const cleanUuid = orderUuid ? orderUuid.replace(/-/g, '').toUpperCase() : Math.random().toString(36).substring(2).toUpperCase();
+    return `LUMB-${cleanUuid.substring(0, 4)}-${cleanUuid.substring(4, 8)}-${cleanUuid.substring(8, 12)}`;
+}
+
 app.post('/webhook', async (req, res) => {
     try {
         const payload = req.body;
@@ -23,6 +29,7 @@ app.post('/webhook', async (req, res) => {
 
         const webhookOrder = payload.data?.order || payload.data || payload;
         const eventType = payload.event || webhookOrder.event;
+        const orderUuid = webhookOrder.uuid || webhookOrder.id;
 
         if (
             eventType === 'order:paid' || 
@@ -33,9 +40,8 @@ app.post('/webhook', async (req, res) => {
             payload.status === true
         ) {
             let discordId = null;
-            let licenseKey = 'Ключ успешно создан в системе Sellix';
 
-            // Достаем цифры из поля customer_email, куда мы записали Discord ID
+            // Достаем Discord ID из поля customer_email
             const emailField = String(webhookOrder.customer_email || '');
             const match = emailField.match(/\b\d{17,20}\b/);
             
@@ -45,16 +51,19 @@ app.post('/webhook', async (req, res) => {
 
             console.log('Извлеченный Discord ID из email:', discordId);
 
-            // Извлечение ключа товара
-            const productSerials = webhookOrder.serials || webhookOrder.product_sent || webhookOrder.product_downloads || webhookOrder.items || [];
+            // Формируем ключ: сначала проверяем, дал ли что-то Sellix, если нет — генерируем автоматически
+            let licenseKey = null;
+            const productSerials = webhookOrder.serials || webhookOrder.product_sent || webhookOrder.product_downloads || [];
+            
             if (Array.isArray(productSerials) && productSerials.length > 0) {
-                if (typeof productSerials[0] === 'string') {
-                    licenseKey = productSerials[0];
-                } else if (productSerials[0].product_name) {
-                    licenseKey = productSerials[0].product_name;
-                }
-            } else if (typeof productSerials === 'string') {
+                licenseKey = typeof productSerials[0] === 'string' ? productSerials[0] : productSerials[0].product_name;
+            } else if (typeof productSerials === 'string' && productSerials.trim() !== '') {
                 licenseKey = productSerials;
+            }
+
+            // Если Sellix прислал только название товара или пустоту — генерируем персональный ключ по UUID заказа
+            if (!licenseKey || licenseKey === 'LumbKey 30 d') {
+                licenseKey = generateLicenseKey(orderUuid);
             }
 
             // Отправка в ЛС
@@ -68,7 +77,7 @@ app.post('/webhook', async (req, res) => {
                     console.error('Ошибка отправки ЛС (закрыты личные сообщения или неверный ID):', dmError.message);
                 }
             } else {
-                console.log('⚠️ В поле customer_email не найден Discord ID. Убедитесь, что указали его при покупке.');
+                console.log('⚠️ В поле customer_email не найден Discord ID.');
             }
         } else {
             console.log('Событие проигнорировано.');
