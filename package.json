@@ -1,0 +1,14 @@
+{
+  "name": "sellix-discord-bot",
+  "version": "1.0.0",
+  "description": "Custom webhook receiver and Discord bot for Sellix",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "express": "^4.18.2",
+    "dotenv": "^16.4.5"
+  }
+}
