@@ -1,6 +1,12 @@
 const { Client, GatewayIntentBits } = require('discord.js');
 const express = require('express');
+const dns = require('dns');
 require('dotenv').config();
+
+// Принудительно устанавливаем порядок резолва DNS IPv4 First, чтобы убрать ошибку EAI_AGAIN в Railway
+if (dns.setDefaultResultOrder) {
+    dns.setDefaultResultOrder('ipv4first');
+}
 
 const app = express();
 app.use(express.json());
@@ -12,7 +18,6 @@ const client = new Client({
     ]
 });
 
-// Обновлено событие ready -> clientReady в соответствии со стандартами discord.js
 client.once('clientReady', () => {
     console.log(`Бот успешно запущен и вошел в систему как ${client.user.tag}`);
 });
@@ -39,15 +44,13 @@ app.post('/webhook', async (req, res) => {
             let discordId = null;
             let licenseKey = 'Ключ успешно создан в системе Sellix';
 
-            // 1. Извлекаем кастомные поля из тела вебхука
+            // 1. Пытаемся взять custom_fields прямо из вебхука
             let customFields = webhookOrder.custom_fields || webhookOrder.properties || payload.custom_fields || null;
 
-            // 2. Если полей нет в вебхуке, делаем запрос к рабочему API Sellix (api.sellix.io)
+            // 2. Если полей в вебхуке нет, запрашиваем API с обработкой IP Fallback
             if ((!customFields || Object.keys(customFields).length === 0) && orderUuid && process.env.SELLIX_API_KEY) {
                 try {
                     console.log('Делаем запрос к API Sellix для получения полей заказа...');
-                    
-                    // Исправлен хост с dev.sellix.io на api.sellix.io
                     const apiResponse = await fetch(`https://api.sellix.io/v1/orders/${orderUuid}`, {
                         method: 'GET',
                         headers: {
@@ -59,7 +62,7 @@ app.post('/webhook', async (req, res) => {
 
                     if (apiResponse.ok) {
                         const apiData = await apiResponse.json();
-                        if (apiData && apiData.data && apiData.data.order) {
+                        if (apiData?.data?.order) {
                             const order = apiData.data.order;
                             customFields = order.custom_fields || order.properties || customFields;
                             
@@ -73,11 +76,11 @@ app.post('/webhook', async (req, res) => {
                         console.error(`Ошибка ответа API Sellix: Статус ${apiResponse.status}`);
                     }
                 } catch (apiErr) {
-                    console.error('Ошибка при запросе к API Sellix:', apiErr);
+                    console.error('Ошибка DNS/сети при запросе к API Sellix (пропускаем и ищем в теле):', apiErr.message);
                 }
             }
 
-            // 3. Универсальный парсинг Discord ID (поддерживает и Массивы, и Объекты)
+            // 3. Сканируем все возможные структуры на наличие Discord ID
             if (customFields) {
                 if (Array.isArray(customFields)) {
                     const foundField = customFields.find(f => {
@@ -86,7 +89,6 @@ app.post('/webhook', async (req, res) => {
                     });
                     if (foundField) discordId = foundField.value || foundField.val;
                 } else if (typeof customFields === 'object') {
-                    // Если custom_fields пришел в виде объекта { "discord_id": "12345" }
                     for (const [key, val] of Object.entries(customFields)) {
                         if (String(key).toLowerCase().includes('discord')) {
                             discordId = typeof val === 'object' ? (val.value || val.val) : val;
@@ -98,12 +100,12 @@ app.post('/webhook', async (req, res) => {
 
             // Резервная проверка прямых ключей
             if (!discordId) {
-                discordId = webhookOrder.discord_id || webhookOrder.discordId || webhookOrder.custom_field_discord_id;
+                discordId = webhookOrder.discord_id || webhookOrder.discordId || webhookOrder.custom_field_discord_id || webhookOrder.customer_discord_id;
             }
 
             console.log('Извлеченный Discord ID:', discordId);
 
-            // 4. Извлечение серийного ключа/товара из вебхука
+            // 4. Серийный ключ
             const productSerials = webhookOrder.serials || webhookOrder.product_sent || webhookOrder.product_downloads || webhookOrder.items || [];
             if (Array.isArray(productSerials) && productSerials.length > 0) {
                 if (typeof productSerials[0] === 'string') {
@@ -115,10 +117,10 @@ app.post('/webhook', async (req, res) => {
                 licenseKey = productSerials;
             }
 
-            // 5. Отправка в Discord
+            // 5. Отправка
             if (discordId) {
                 try {
-                    const cleanId = String(discordId).trim().replace(/[<@!>]/g, ''); // очищаем от лишних символов <@...>
+                    const cleanId = String(discordId).trim().replace(/[<@!>]/g, '');
                     const user = await client.users.fetch(cleanId);
                     await user.send(`Спасибо за покупку в магазине!\nВаш лицензионный ключ: \`${licenseKey}\``);
                     console.log(`Ключ успешно отправлен в ЛС пользователю с Discord ID: ${cleanId}`);
@@ -126,7 +128,7 @@ app.post('/webhook', async (req, res) => {
                     console.error('Не удалось отправить ЛС (закрыты ЛС у юзера или неверный ID):', dmError);
                 }
             } else {
-                console.log('В заказе не найден Discord ID покупателя.');
+                console.log('В заказе не найден Discord ID покупателя. Проверьте настройки Custom Fields товара в Sellix.');
             }
         } else {
             console.log('Событие проигнорировано.');
